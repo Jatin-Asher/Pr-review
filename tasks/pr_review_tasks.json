@@ -1,0 +1,77 @@
+{
+  "tasks": [
+    {
+      "task_id": "django-auth-bypass",
+      "repository": "octo-org/payments-api",
+      "pr_number": 184,
+      "title": "Skip auth check for internal callback requests",
+      "description": "This PR simplifies callback handling for our payment webhook endpoint.",
+      "changed_files": [
+        "payments/views.py",
+        "payments/tests/test_webhooks.py"
+      ],
+      "diff": "diff --git a/payments/views.py b/payments/views.py\n@@\n-def handle_webhook(request):\n-    if not verify_signature(request):\n-        return HttpResponseForbidden()\n+def handle_webhook(request):\n+    internal = request.headers.get('X-Internal-Call') == 'true'\n+    if not internal and not verify_signature(request):\n+        return HttpResponseForbidden()\n     payload = json.loads(request.body)\n     process_payment_event(payload)\n     return HttpResponse(status=204)\n\ndiff --git a/payments/tests/test_webhooks.py b/payments/tests/test_webhooks.py\n@@\n def test_invalid_signature_is_rejected(client):\n     response = client.post('/webhook', data='{}', content_type='application/json')\n     assert response.status_code == 403\n+\n+def test_internal_calls_skip_signature(client):\n+    response = client.post('/webhook', data='{}', content_type='application/json', HTTP_X_INTERNAL_CALL='true')\n+    assert response.status_code == 204\n",
+      "expected_verdict": "REQUEST_CHANGES",
+      "required_findings": [
+        "header based auth bypass allows spoofing requests",
+        "webhook endpoint should always verify signature for untrusted traffic",
+        "tests only cover happy path and miss malicious forged header case"
+      ],
+      "nice_to_have_findings": [
+        "internal service authentication should use signed token or network boundary",
+        "security regression on public endpoint"
+      ],
+      "merge_blockers": [
+        "A client can forge X-Internal-Call and bypass signature validation.",
+        "The new test normalizes insecure behavior instead of guarding against abuse."
+      ]
+    },
+    {
+      "task_id": "react-stale-state",
+      "repository": "octo-org/admin-dashboard",
+      "pr_number": 912,
+      "title": "Optimize save handler in settings panel",
+      "description": "Refactors the save handler to reduce rerenders in the settings form.",
+      "changed_files": [
+        "src/components/SettingsPanel.tsx"
+      ],
+      "diff": "diff --git a/src/components/SettingsPanel.tsx b/src/components/SettingsPanel.tsx\n@@\n export function SettingsPanel() {\n   const [settings, setSettings] = useState(initialSettings)\n+  const snapshot = settings\n \n   async function handleSave() {\n-    await api.saveSettings(settings)\n+    await api.saveSettings(snapshot)\n   }\n \n   return <SettingsForm settings={settings} onChange={setSettings} onSave={handleSave} />\n }\n",
+      "expected_verdict": "REQUEST_CHANGES",
+      "required_findings": [
+        "snapshot captures stale settings from an earlier render",
+        "save handler may send outdated values after user edits",
+        "no test covers changing settings before clicking save"
+      ],
+      "nice_to_have_findings": [
+        "use latest state inside handler instead of render snapshot",
+        "regression affects user data integrity"
+      ],
+      "merge_blockers": [
+        "The save call can persist stale form state.",
+        "The PR claims optimization but introduces correctness risk."
+      ]
+    },
+    {
+      "task_id": "simple-doc-update",
+      "repository": "octo-org/docs-site",
+      "pr_number": 456,
+      "title": "Update README with new installation instructions",
+      "description": "Adds clear installation steps for the new Docker setup.",
+      "changed_files": [
+        "README.md"
+      ],
+      "diff": "diff --git a/README.md b/README.md\n@@\n ## Installation\n \n-Clone the repository and run `npm install`.\n+Clone the repository and run `npm install`.\n+\n+### Docker Setup (Recommended)\n+\n+1. Ensure Docker is installed on your system\n+2. Run `docker build -t myapp .`\n+3. Run `docker run -p 3000:3000 myapp`\n+4. Open http://localhost:3000 in your browser\n",
+      "expected_verdict": "APPROVE",
+      "required_findings": [
+        "documentation is clear and accurate",
+        "new instructions follow existing format",
+        "no breaking changes to existing content"
+      ],
+      "nice_to_have_findings": [
+        "includes verification steps",
+        "mentions prerequisites clearly"
+      ],
+      "merge_blockers": []
+    }
+  ]
+}

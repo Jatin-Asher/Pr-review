@@ -1,0 +1,46 @@
+name: ai-pr-reviewer
+version: 1.0.0
+description: AI PR review benchmark environment for evaluating code review agents
+author: AI PR Reviewer Team
+license: MIT
+tags:
+  - code-review
+  - security
+  - ai-benchmark
+  - pull-request
+environment:
+  type: async
+  max_steps: 4
+  observation_space:
+    type: structured
+    properties:
+      task_id: string
+      repository: string
+      pr_number: integer
+      title: string
+      description: string
+      changed_files: array
+      diff: string
+      step_count: integer
+      attempts_remaining: integer
+      last_action_error: string
+      evaluator_feedback: string
+  action_space:
+    type: structured
+    properties:
+      review: string
+  reward_space:
+    type: structured
+    properties:
+      value: number
+      breakdown: object
+tasks:
+  - id: django-auth-bypass
+    difficulty: hard
+    description: Security vulnerability in authentication bypass
+  - id: react-stale-state
+    difficulty: medium
+    description: React state management bug
+  - id: simple-doc-update
+    difficulty: easy
+    description: Simple documentation update
