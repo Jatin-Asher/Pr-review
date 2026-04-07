@@ -18,6 +18,7 @@ This project implements a complete OpenEnv-compliant benchmark environment for t
 
 - `app/` FastAPI webhook scaffold
 - `my_env_v4.py` OpenEnv-compliant benchmark environment
+- `task_generator.py` AI synthetic task generator
 - `ui_app.py` **Streamlit web UI** (main entry point for Hugging Face Spaces)
 - `tasks/pr_review_tasks.json` 3 benchmark tasks (easy/medium/hard)
 - `inference.py` OpenAI client inference runner
@@ -31,8 +32,12 @@ Make sure these exist before running inference:
 - `OPENAI_API_KEY` (or `GROQ_API_KEY`, `API_KEY`)
 - `API_BASE_URL` (defaults to OpenAI)
 - `MODEL_NAME` (defaults to gpt-4)
+- `GITHUB_TOKEN` (required for live GitHub PR mode)
 
 You can copy `.env.example` to `.env` and fill in the values you want.
+
+> Use `GITHUB_TOKEN` when you want the UI to fetch a real pull request from GitHub by repository and PR number.
+> The UI now supports a preview-only GitHub mode, so you can load and inspect a real PR before you run AI scoring.
 
 ## Getting Started
 
@@ -73,6 +78,14 @@ python inference.py
 ```
 
 This runs the AI on all 3 tasks and outputs reproducible baseline scores.
+
+## Generate AI synthetic tasks
+
+```bash
+python task_generator.py --count 1
+```
+
+This creates a new synthetic PR review task and appends it to `tasks/pr_review_tasks.json`.
 
 ## Validate OpenEnv compliance
 

@@ -6,7 +6,8 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from my_env_v4 import MyEnvV4Env, Action
+from my_env_v4 import MyEnvV4Env, Action, PRReviewTask
+from task_generator import generate_synthetic_task, save_synthetic_task
 
 # Load environment variables
 load_dotenv()
@@ -247,39 +248,100 @@ def main():
             return
         
         # Task selection
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            task_id = st.selectbox(
-                "Select a Task:",
-                ["django-auth-bypass (Hard - Security)", "react-stale-state (Medium - Bug)", "simple-doc-update (Easy - Docs)"],
-                key="task_select"
-            )
-        
-        # Map task name to ID
-        task_map = {
-            "django-auth-bypass (Hard - Security)": "django-auth-bypass",
-            "react-stale-state (Medium - Bug)": "react-stale-state",
-            "simple-doc-update (Easy - Docs)": "simple-doc-update"
-        }
-        task_id_selected = task_map[task_id]
-        
+        task_id = None
+        task_id_selected = None
+        load_mode = st.radio(
+            "Select the review source:",
+            ["Sample Task", "AI Generated Task", "Live GitHub PR", "Live GitHub PR (Preview Only)"],
+            index=0,
+            horizontal=True,
+            key="task_mode"
+        )
+
+        if load_mode == "Sample Task":
+            task_options = [
+                "django-auth-bypass (Hard - Security)",
+                "react-stale-state (Medium - Bug)",
+                "simple-doc-update (Easy - Docs)",
+            ]
+            task_id = st.selectbox("Select a Task:", task_options, key="task_select")
+            task_map = {
+                "django-auth-bypass (Hard - Security)": "django-auth-bypass",
+                "react-stale-state (Medium - Bug)": "react-stale-state",
+                "simple-doc-update (Easy - Docs)": "simple-doc-update",
+            }
+            task_id_selected = task_map[task_id]
+        elif load_mode == "AI Generated Task":
+            st.info("Generate a synthetic PR task for the benchmark. This uses the AI model to create a new review scenario.")
+            if st.button("Generate AI Task", use_container_width=True):
+                try:
+                    generated_task = generate_synthetic_task()
+                    save_synthetic_task(generated_task)
+                    st.session_state.generated_task = generated_task
+                    st.session_state.task_history = []
+                    st.session_state.current_task_results = None
+                    st.session_state.observation = None
+                    st.session_state.github_mode = load_mode
+                    st.success("Generated and saved a synthetic PR task.")
+                except Exception as e:
+                    st.error(f"Failed to generate task: {e}")
+        else:
+            default_repo = st.session_state.get("github_repo", "octo-org/payments-api")
+            default_pr = st.session_state.get("github_pr_number", 184)
+            github_repo = st.text_input("GitHub repository", value=default_repo, help="Use owner/repo format", key="github_repo")
+            github_pr_number = st.number_input("Pull Request number", min_value=1, value=default_pr, step=1, key="github_pr_number")
+            if not github_repo.strip():
+                st.warning("Enter a GitHub repository in owner/repo format.")
+
+        if load_mode == "Live GitHub PR (Preview Only)":
+            st.info("Preview mode loads the PR and diff, without requiring a live benchmark score.")
+
         with col2:
             if st.button("🔄 Load Task", use_container_width=True):
                 st.session_state.task_history = []
                 st.session_state.current_task_results = None
-        
-        # Reset and load task
-        os.environ["PR_REVIEW_TASK_ID"] = task_id_selected
-        
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            observation, reward, done, info = loop.run_until_complete(env.reset())
-            st.session_state.observation = observation
-        except Exception as e:
-            st.error(f"Error loading task: {str(e)}")
-            return
+                st.session_state.observation = None
+                st.session_state.github_mode = load_mode
+
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    if load_mode == "Sample Task":
+                        os.environ["PR_REVIEW_TASK_ID"] = task_id_selected
+                        observation, reward, done, info = loop.run_until_complete(env.reset())
+                    elif load_mode == "AI Generated Task":
+                        if "generated_task" not in st.session_state or not st.session_state.generated_task:
+                            raise ValueError("Generate an AI task first.")
+                        generated = PRReviewTask(**st.session_state.generated_task)
+                        env = MyEnvV4Env(tasks=[generated])
+                        observation, reward, done, info = loop.run_until_complete(env.reset())
+                    else:
+                        os.environ.pop("PR_REVIEW_TASK_ID", None)
+                        observation, reward, done, info = loop.run_until_complete(env.reset_from_github(github_repo.strip(), int(github_pr_number)))
+                    st.session_state.observation = observation
+                except Exception as e:
+                    st.session_state.observation = None
+                    st.error(f"Error loading task: {str(e)}")
+                    return
+
+        if st.session_state.observation is None:
+            try:
+                if load_mode == "Sample Task":
+                    os.environ["PR_REVIEW_TASK_ID"] = task_id_selected
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    observation, reward, done, info = loop.run_until_complete(env.reset())
+                    st.session_state.observation = observation
+                    st.session_state.github_mode = load_mode
+                elif load_mode == "Live GitHub PR" and "github_repo" in st.session_state and "github_pr_number" in st.session_state:
+                    os.environ.pop("PR_REVIEW_TASK_ID", None)
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    observation, reward, done, info = loop.run_until_complete(env.reset_from_github(st.session_state.github_repo.strip(), int(st.session_state.github_pr_number)))
+                    st.session_state.observation = observation
+                    st.session_state.github_mode = load_mode
+            except Exception:
+                pass
         
         if st.session_state.observation:
             obs = st.session_state.observation
@@ -293,7 +355,15 @@ def main():
             with col2:
                 st.metric("PR Number", f"#{obs.pr_number}")
             with col3:
-                st.metric("Difficulty", task_id.split("(")[1].split(" -")[0].strip())
+                if st.session_state.get("github_mode") in {"Live GitHub PR", "Live GitHub PR (Preview Only)"}:
+                    difficulty_label = "Live GitHub"
+                elif st.session_state.get("github_mode") == "AI Generated Task":
+                    difficulty_label = "AI Generated"
+                elif task_id:
+                    difficulty_label = task_id.split("(")[1].split(" -")[0].strip()
+                else:
+                    difficulty_label = "Sample"
+                st.metric("Difficulty", difficulty_label)
             
             st.markdown(f"**Title:** `{obs.title}`")
             st.markdown(f"**Description:** {obs.description}")
@@ -310,6 +380,9 @@ def main():
             # Run review button
             st.markdown("---")
             
+            if st.session_state.get("github_mode") == "Live GitHub PR (Preview Only)":
+                st.info("This PR is loaded in preview mode. You can inspect the diff and still choose to run AI review manually if you want scoring.")
+
             col1, col2 = st.columns([2, 1])
             
             with col1:

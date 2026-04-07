@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import BaseModel
 
 
@@ -58,6 +59,7 @@ class PRReviewTask(BaseModel):
     required_findings: list[str]
     nice_to_have_findings: list[str]
     merge_blockers: list[str]
+    live_github: bool = False
 
 
 class MyEnvV4Env:
@@ -98,7 +100,17 @@ class MyEnvV4Env:
         return cls(tasks=tasks, benchmark=benchmark, task_name=task_name, max_steps=max_steps)
 
     async def reset(self) -> tuple[Observation, float, bool, dict[str, Any]]:
+        repo_override = os.getenv("GITHUB_PR_REPO", "").strip()
+        pr_override = os.getenv("GITHUB_PR_NUMBER", "").strip()
         task_override = os.getenv("PR_REVIEW_TASK_ID", "").strip()
+
+        if repo_override and pr_override:
+            try:
+                pr_number = int(pr_override)
+                return await self.reset_from_github(repo_override, pr_number)
+            except ValueError:
+                raise ValueError("GITHUB_PR_NUMBER must be an integer")
+
         self._current_task = select_task(self._tasks, task_override)
         self._state.step_count = 0
         self._state.total_reward = 0.0
@@ -111,6 +123,22 @@ class MyEnvV4Env:
         reward = 0.0
         done = False
         info = {"task_id": self._current_task.task_id}
+        return observation, reward, done, info
+
+    async def reset_from_github(self, repo: str, pr_number: int) -> tuple[Observation, float, bool, dict[str, Any]]:
+        github_token = os.getenv("GITHUB_TOKEN")
+        self._current_task = load_github_pr_task(repo, pr_number, github_token=github_token)
+        self._state.step_count = 0
+        self._state.total_reward = 0.0
+        self._state.done = False
+        self._state.current_task_id = self._current_task.task_id
+        self._state.last_action_error = None
+        self._state.review_history = []
+
+        observation = self._build_observation(evaluator_feedback="Review the GitHub pull request and decide whether it is safe to merge.")
+        reward = 0.0
+        done = False
+        info = {"task_id": self._current_task.task_id, "live_github": True}
         return observation, reward, done, info
 
     async def step(self, action: Action) -> tuple[Observation, float, bool, dict[str, Any]]:
@@ -194,6 +222,50 @@ def load_tasks() -> list[PRReviewTask]:
     return [PRReviewTask(**item) for item in raw["tasks"]]
 
 
+def load_github_pr_task(repo: str, pr_number: int, github_token: str | None = None) -> PRReviewTask:
+    github_api_url = "https://api.github.com"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if github_token:
+        headers["Authorization"] = f"token {github_token}"
+
+    with httpx.Client(headers=headers, timeout=20.0) as client:
+        pr_url = f"{github_api_url}/repos/{repo}/pulls/{pr_number}"
+        response = client.get(pr_url)
+        if response.status_code != 200:
+            raise ValueError(f"Failed to fetch PR {repo}#{pr_number}: {response.status_code} {response.text}")
+        pr_data = response.json()
+
+        diff_response = client.get(pr_url, headers={**headers, "Accept": "application/vnd.github.v3.diff"})
+        if diff_response.status_code != 200:
+            raise ValueError(f"Failed to fetch diff for PR {repo}#{pr_number}: {diff_response.status_code}")
+        diff_text = diff_response.text
+
+        files_url = f"{github_api_url}/repos/{repo}/pulls/{pr_number}/files"
+        files_response = client.get(files_url)
+        if files_response.status_code != 200:
+            raise ValueError(f"Failed to fetch changed files for PR {repo}#{pr_number}: {files_response.status_code}")
+        files_data = files_response.json()
+        changed_files = [file_info.get("filename", "") for file_info in files_data]
+
+    title = pr_data.get("title") or "GitHub PR Review"
+    description = pr_data.get("body") or ""
+
+    return PRReviewTask(
+        task_id=f"github-{repo.replace('/', '_')}-{pr_number}",
+        repository=repo,
+        pr_number=pr_number,
+        title=title,
+        description=description,
+        changed_files=changed_files,
+        diff=diff_text,
+        expected_verdict="COMMENT",
+        required_findings=[],
+        nice_to_have_findings=[],
+        merge_blockers=[],
+        live_github=True,
+    )
+
+
 def select_task(tasks: list[PRReviewTask], task_id: str) -> PRReviewTask:
     if task_id:
         for task in tasks:
@@ -212,6 +284,28 @@ def extract_verdict(review_text: str) -> str | None:
 
 
 def score_review(review_text: str, verdict: str | None, task: PRReviewTask) -> dict[str, float]:
+    normalized = normalize_text(review_text)
+
+    if task.live_github:
+        verdict_score = 0.4 if verdict else 0.0
+        required_score = 0.0
+        nice_to_have_score = 0.1 if any(keyword in normalized for keyword in ["test", "tests", "coverage", "security", "bug", "risk"]) else 0.0
+
+        explanation_score = 0.0
+        if len(review_text.split()) >= 40:
+            explanation_score += 0.05
+        if "test" in normalized or "tests" in normalized:
+            explanation_score += 0.05
+
+        total = min(verdict_score + nice_to_have_score + explanation_score, 1.0)
+        return {
+            "verdict": round(verdict_score, 4),
+            "required_findings": round(required_score, 4),
+            "nice_to_have_findings": round(nice_to_have_score, 4),
+            "explanation": round(explanation_score, 4),
+            "total": round(total, 4),
+        }
+
     normalized = normalize_text(review_text)
     verdict_score = 0.4 if verdict == task.expected_verdict else 0.0
 
@@ -244,6 +338,19 @@ def build_feedback(
     task: PRReviewTask,
 ) -> str:
     normalized_review = normalize_text(review_text)
+
+    if task.live_github:
+        feedback_parts = []
+        if not verdict:
+            feedback_parts.append("Add a verdict line with APPROVE, REQUEST_CHANGES, or COMMENT.")
+        if score_breakdown["explanation"] < 0.1:
+            feedback_parts.append("Add clearer justification and mention potential impacts or tests.")
+        if score_breakdown["nice_to_have_findings"] < 0.1:
+            feedback_parts.append("Mention security, bug risk, or test coverage if relevant.")
+        if not feedback_parts:
+            feedback_parts.append("Good live PR review. You identified a clear verdict and provided useful reasoning.")
+        return " ".join(feedback_parts).strip()
+
     missing_required = [
         finding for finding in task.required_findings if not finding_in_text(finding, normalized_review)
     ]

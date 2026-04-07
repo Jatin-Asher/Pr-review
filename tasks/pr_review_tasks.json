@@ -72,6 +72,23 @@
         "mentions prerequisites clearly"
       ],
       "merge_blockers": []
+    },
+    {
+      "task_id": "PR-123",
+      "repository": "user/repo",
+      "pr_number": 42,
+      "title": "Fix typo in README",
+      "description": "Corrected spelling error in project description",
+      "changed_files": [
+        "README.md"
+      ],
+      "diff": "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n- This is a tesst project.\n+ This is a test project.",
+      "expected_verdict": "APPROVE",
+      "required_findings": [],
+      "nice_to_have_findings": [
+        "The change is minor and does not affect functionality."
+      ],
+      "merge_blockers": []
     }
   ]
 }
